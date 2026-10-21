@@ -19,7 +19,7 @@ mkdir -p "$root/build/host" "$root/assets/fonts"
 while read -r source output size range; do
     [[ -n $source ]] || continue
     "$root/build/host/bake_font" "$root/third_party/fonts/$source" \
-        "$root/assets/fonts/$output.huifont" "$size" "$range" 1024
+        "$root/assets/fonts/$output.huifont" "$size" "$range" 2048 european
 done <<'FONTS'
 Inter-Regular.ttf inter-regular 56 8
 Inter-SemiBold.ttf inter-semibold 56 8

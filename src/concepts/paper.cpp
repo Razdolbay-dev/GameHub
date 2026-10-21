@@ -4,23 +4,10 @@
 //
 // A warm, tactile library in the spirit of a boxed board-game shelf: cream
 // paper cards on a night-blue table, each holding a cover like a photo print.
-// What makes it feel finished:
 //
-//   - every card owns a pair of springs keyed by its title, not by its place,
-//     so sorting (Square) and filtering (L2/R2) make the cards visibly travel
-//     to their new places, a few milliseconds apart, instead of redrawing;
-//   - a card in the air looks like it: the focused card grows, its shadow
-//     drops away and softens, and a second sheet turns out from under it;
-//     cards in flight lift and lean by their speed;
-//   - one gold ring glides between cards and follows a card while it travels;
-//     the grid scrolls with a spring and dissolves at the edges it scrolls past;
-//   - the details dialog is itself a sheet of paper laid over a blurred
-//     screen, with an ink highlight that glides between its actions;
-//   - small things pop: the favourite sticker and the "finished" stamp
-//     overshoot, and finishing a title throws confetti;
-//   - an empty filter is a friendly note, never a blank screen;
-//   - the paper sound set answers every move, panned to where it happened,
-//     and the edges of the grid refuse softly.
+// The grid grows at runtime: when the catalog size changes (the shell appended
+// another page), update() notices it, extends the per-item state and rebuilds
+// the visible list. Navigation past the last card asks the shell for more.
 
 #include "concepts/concepts.hpp"
 
@@ -35,6 +22,10 @@
 #include <cstring>
 #include <string>
 #include <vector>
+
+// Implemented in main.cpp: fetches the next page and appends it to the
+// catalog. Called when the focus reaches the end of the visible list.
+extern void request_more_movies();
 
 namespace hui::concepts
 {
@@ -209,7 +200,7 @@ Rect chip_rect(int index)
     float x = kMargin + ui::button_width(ui::Button::l2, kShoulder) + 18.0f;
     for (int i = 0; i < index; ++i)
         x += kChips[i].width + kChipGap;
-    return {x, kChipY, kChips[index].width, kChipH};
+    return {x, kChipY, kChips[index].width, kChipH};   // было kChips[i]
 }
 
 Rect action_rect(float index)
@@ -232,22 +223,7 @@ class Paper final : public app::Concept
   public:
     explicit Paper(app::Context &context) : context_(context)
     {
-        const auto &items = context.catalog.items();
-        const std::size_t count = items.size();
-        cards_.resize(count);
-        favorite_.assign(count, false);
-        finished_.assign(count, false);
-        titles_.reserve(count);
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            finished_[i] = items[i].progress >= 1.0f;
-            cards_[i].done.snap(finished_[i] ? 1.0f : 0.0f);
-            // Fitted once: a title can never run over the edge of its card.
-            const gfx::Font *font = context.fonts.semibold.font;
-            const float room = kCardW - 2.0f * kCoverInset - 4.0f;
-            titles_.push_back(font != nullptr ? font->fit(items[i].title, 24.0f, room)
-                                              : std::string(items[i].title));
-        }
+        grow_to_catalog();
         rebuild(true);
         ring_.snap(ring_target());
         chip_.snap(chip_rect(0));
@@ -277,6 +253,15 @@ class Paper final : public app::Concept
 
     void update(const InputFrame &input, float dt, app::Feedback &feedback) override
     {
+        // The catalog can grow while the design runs (the shell appends a
+        // page). Extend the per-item state and re-flow the visible list so
+        // the new cards appear without restarting the design.
+        if (context_.catalog.size() != known_catalog_size_)
+        {
+            grow_to_catalog();
+            rebuild(false);
+        }
+
         const bool reduced = context_.settings.reduced_motion;
         age_ += dt;
         clock_ += dt;
@@ -458,6 +443,36 @@ class Paper final : public app::Concept
             return ring_.value();
         const Card &card = cards_[static_cast<std::size_t>(focused)];
         return scaled({card.x.value, card.y.value, kCardW, kCardH}, 1.0f + kLift);
+    }
+
+    // Extend the per-item state to cover the current catalogue size. Existing
+    // entries keep their animation state, so the cards already on the table
+    // do not jump when a page is appended.
+    void grow_to_catalog()
+    {
+        const std::size_t count = context_.catalog.size();
+        if (count == known_catalog_size_)
+            return;
+
+        const std::size_t old = cards_.size();
+        if (count > old)
+        {
+            cards_.resize(count);
+            favorite_.resize(count, false);
+            finished_.resize(count, false);
+            titles_.reserve(count);
+            for (std::size_t i = old; i < count; ++i)
+            {
+                const demo::Item &it = context_.catalog[i];
+                finished_[i] = it.progress >= 1.0f;
+                cards_[i].done.snap(finished_[i] ? 1.0f : 0.0f);
+                const gfx::Font *font = context_.fonts.semibold.font;
+                const float room = kCardW - 2.0f * kCoverInset - 4.0f;
+                titles_.push_back(font != nullptr ? font->fit(it.title, 24.0f, room)
+                                                  : std::string(it.title));
+            }
+        }
+        known_catalog_size_ = count;
     }
 
     // Recomputes which cards are on the table and where each belongs, after a
@@ -676,6 +691,15 @@ class Paper final : public app::Concept
         case Direction::none:
             break;
         }
+
+        // At the end of the list, ask the shell for the next page instead of
+        // refusing. The catalog grows asynchronously; update() picks it up.
+        if (next == focus_ && focus_ == count - 1 &&
+            (input.nav == Direction::right || input.nav == Direction::down))
+        {
+            request_more_movies();
+        }
+
         if (next != focus_)
         {
             focus_ = next;
@@ -1352,6 +1376,7 @@ class Paper final : public app::Concept
     std::vector<bool> favorite_;
     std::vector<bool> finished_;
     std::vector<int> visible_; // catalogue indices on the table, in order
+    std::size_t known_catalog_size_ = 0; // last size seen by grow_to_catalog()
     int focus_ = 0;            // slot in visible_
     Filter filter_ = Filter::all;
     Filter empty_filter_ = Filter::favorites; // the last filter found empty

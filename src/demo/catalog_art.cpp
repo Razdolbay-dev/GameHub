@@ -4,7 +4,9 @@
 //
 // The covers show how to render into a texture with the UI renderer itself:
 // bind a framebuffer, queue a backdrop and a draw list, present. An app with
-// real artwork would upload its images with GlBatch::create_texture instead.
+// real artwork uploads its images with GlBatch::create_texture instead; those
+// items already have cover != 0 when build_covers() runs, so they are skipped
+// here and their textures are never touched by release_covers().
 
 #include "demo/catalog.hpp"
 
@@ -89,15 +91,17 @@ void Catalog::release_covers()
 {
     for (Item &item : items_)
     {
-        if (item.cover != 0)
+        // Only free textures this class generated. Posters uploaded by the
+        // app have owned_cover == false and belong to the caller.
+        if (item.owned_cover && item.cover != 0)
             glDeleteTextures(1, &item.cover);
         item.cover = 0;
+        item.owned_cover = false;
     }
 }
 
 bool Catalog::build_covers(gfx::Renderer &renderer, const ui::Fonts &fonts)
 {
-    release_covers();
     constexpr float kSize = static_cast<float>(kCoverSize);
     GLuint framebuffer = 0;
     glGenFramebuffers(1, &framebuffer);
@@ -106,6 +110,14 @@ bool Catalog::build_covers(gfx::Renderer &renderer, const ui::Fonts &fonts)
     int index = 0;
     for (Item &item : items_)
     {
+        // A poster was already uploaded by the app: keep it, do not draw a
+        // procedural cover over it, and never free it in release_covers().
+        if (item.cover != 0)
+        {
+            ++index;
+            continue;
+        }
+
         GLuint texture = 0;
         glGenTextures(1, &texture);
         glBindTexture(GL_TEXTURE_2D, texture);
@@ -157,6 +169,7 @@ bool Catalog::build_covers(gfx::Renderer &renderer, const ui::Fonts &fonts)
         renderer.draw(list);
         renderer.present(framebuffer, kCoverSize, kCoverSize, kSize, kSize);
         item.cover = texture;
+        item.owned_cover = true;
         ++index;
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
